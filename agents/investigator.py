@@ -1,13 +1,9 @@
+from typing import Literal
+
+from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from dotenv import load_dotenv
-
-from tools.statistics import (
-    descriptive_statistics,
-    group_analysis,
-    correlation_analysis,
-    hypothesis_test,
-)
 
 load_dotenv()
 
@@ -18,6 +14,40 @@ llm = ChatGroq(
 )
 
 
+class AnalysisDecision(BaseModel):
+    tool: Literal[
+        "descriptive_statistics",
+        "group_analysis",
+        "correlation_analysis",
+        "hypothesis_test",
+    ] = Field(
+        description="The statistical tool that should be used."
+    )
+
+    column: str = Field(
+        description="Primary column required for the analysis."
+    )
+
+    second_column: str | None = Field(
+        default=None,
+        description="Second column if required."
+    )
+
+    group_column: str | None = Field(
+        default=None,
+        description="Grouping column if required."
+    )
+
+    test: str | None = Field(
+        default=None,
+        description="Statistical test if hypothesis_test is selected."
+    )
+
+    reason: str = Field(
+        description="Short explanation for selecting the tool."
+    )
+
+
 investigator_prompt = ChatPromptTemplate.from_messages(
     [
         (
@@ -25,38 +55,35 @@ investigator_prompt = ChatPromptTemplate.from_messages(
             """
 You are the Investigator Agent of StatAgent.
 
-Your job is to investigate one analytical task from
-an investigation plan.
-
-You have access to statistical tools.
+Your job is to select the correct statistical analysis
+for one investigation task.
 
 Available tools:
 
 1. descriptive_statistics
-   Use for numerical descriptive statistics.
+   For describing one numerical variable.
 
 2. group_analysis
-   Use to compare a numerical variable across groups.
+   For comparing a numerical variable across groups.
 
 3. correlation_analysis
-   Use to measure relationships between two numerical variables.
+   For measuring the relationship between two numerical
+   variables.
 
 4. hypothesis_test
-   Use for chi-square, t-test, or Mann-Whitney U tests.
+   Supports:
+   - chi_square
+   - t_test
+   - mann_whitney
 
-Your job is to determine which tool is appropriate
-for the current investigation task.
+Rules:
 
-Do not invent columns.
-Only use columns present in the dataset profile.
-
-Return:
-- The tool that should be used
-- The required columns
-- A short explanation of why the tool is appropriate
-
-Do not invent statistical results.
-The Python tools will calculate the actual results.
+- Only use columns present in the dataset profile.
+- Do not invent columns.
+- Do not calculate statistical results yourself.
+- Select only one tool.
+- If hypothesis_test is selected, specify the appropriate test.
+- Return a structured analysis decision.
 """
         ),
         (
@@ -67,18 +94,25 @@ Dataset Profile:
 
 Current Investigation Task:
 {current_task}
+
+Select the appropriate statistical analysis.
 """
         ),
     ]
 )
 
 
+structured_llm = llm.with_structured_output(
+    AnalysisDecision
+)
+
+
 def select_analysis_tool(
     dataset_profile: dict,
     current_task: str,
-) -> str:
+) -> AnalysisDecision:
 
-    chain = investigator_prompt | llm
+    chain = investigator_prompt | structured_llm
 
     response = chain.invoke(
         {
@@ -87,4 +121,4 @@ def select_analysis_tool(
         }
     )
 
-    return response.content
+    return response
