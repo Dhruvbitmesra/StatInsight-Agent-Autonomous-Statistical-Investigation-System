@@ -11,6 +11,7 @@ class AgentState(TypedDict, total=False):
     investigation_plan: list[str]
     current_task: str
     completed_tasks: list[str]
+    investigation_decision: dict
 
     analysis_results: list[dict[str, Any]]
     generated_code: str
