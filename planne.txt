@@ -1442,3 +1442,2703 @@ and only then introduce more autonomous behavior.
 
 
 ============================================================
+============================================================
+STATAGENT — STEP 6
+LANGGRAPH INITIAL WORKFLOW
+============================================================
+
+OBJECTIVE
+---------
+
+The previous components were working independently:
+
+- Dataset Profiler
+- Planner Agent
+- Investigator Agent
+- Statistical Tools
+- Tool Executor
+
+The next goal was to connect these components into a single
+LangGraph workflow.
+
+This is the first point where StatAgent behaves like an actual
+agentic pipeline instead of a collection of separate Python files.
+
+
+============================================================
+FILE
+============================================================
+
+graph/workflow.py
+
+
+This file is responsible for:
+
+1. Creating LangGraph nodes
+2. Connecting the nodes
+3. Passing AgentState between nodes
+4. Executing the workflow
+5. Compiling the graph
+
+
+============================================================
+CURRENT WORKFLOW
+============================================================
+
+The current workflow is:
+
+START
+  ↓
+Profile Dataset
+  ↓
+Planner Agent
+  ↓
+Investigator Agent
+  ↓
+Tool Executor
+  ↓
+END
+
+
+In simplified form:
+
+User
+ ↓
+Dataset
+ ↓
+Profiler
+ ↓
+Planner
+ ↓
+Investigator
+ ↓
+Statistical Tool
+ ↓
+Actual Result
+
+
+============================================================
+WHY LANGGRAPH?
+============================================================
+
+LangChain helps us interact with LLMs and create chains.
+
+LangGraph is used to control a multi-step agent workflow.
+
+Our system contains multiple stages that need to execute in
+a specific order and share information.
+
+For example:
+
+The Planner needs:
+    User Question + Dataset Profile
+
+The Investigator needs:
+    Dataset Profile + Current Task
+
+The Executor needs:
+    Investigator Decision + Dataset
+
+Therefore, we need a workflow system that passes information
+between these stages.
+
+LangGraph provides this workflow control.
+
+
+============================================================
+AGENT STATE IN THE WORKFLOW
+============================================================
+
+AgentState acts as the shared memory of the graph.
+
+The nodes don't need to directly call each other.
+
+Instead:
+
+Node
+ ↓
+Reads State
+ ↓
+Performs its task
+ ↓
+Returns State updates
+ ↓
+Next Node receives updated State
+
+
+For example:
+
+Profile Node:
+
+Input:
+    dataset_path
+
+Output:
+    dataset_profile
+
+
+Planner Node:
+
+Input:
+    question
+    dataset_profile
+
+Output:
+    investigation_plan
+
+
+Investigator Node:
+
+Input:
+    dataset_profile
+    investigation_plan
+
+Output:
+    current_task
+    investigation_decision
+
+
+Executor Node:
+
+Input:
+    dataset_path
+    current_task
+    investigation_decision
+
+Output:
+    analysis_results
+    completed_tasks
+
+
+============================================================
+NODE 1 — PROFILE NODE
+============================================================
+
+Function:
+
+profile_node()
+
+
+Purpose:
+
+Load the dataset and generate its profile.
+
+
+Process:
+
+dataset_path
+     ↓
+pd.read_csv()
+     ↓
+DataFrame
+     ↓
+profile_dataset()
+     ↓
+dataset_profile
+
+
+The profiler provides information such as:
+
+- Number of rows
+- Number of columns
+- Column names
+- Numerical columns
+- Categorical columns
+- Missing values
+- Duplicate rows
+- Descriptive statistics
+
+
+The node returns:
+
+{
+    "dataset_profile": profile
+}
+
+
+This gets stored in AgentState.
+
+
+============================================================
+NODE 2 — PLANNER NODE
+============================================================
+
+Function:
+
+planner_node()
+
+
+Purpose:
+
+Create an investigation plan from:
+
+1. User question
+2. Dataset profile
+
+
+Process:
+
+Question
+   +
+Dataset Profile
+   ↓
+Planner Agent
+   ↓
+Investigation Plan
+
+
+The Planner returns a text-based numbered plan.
+
+For example:
+
+1. Analyze survival rate by sex.
+2. Analyze survival by passenger class.
+3. Compare age between survival groups.
+4. Analyze relationship between fare and survival.
+
+
+The workflow converts this text into a Python list.
+
+
+Example:
+
+[
+    "Analyze survival rate by sex",
+    "Analyze survival by passenger class",
+    "Compare age between survival groups"
+]
+
+
+The node also initializes:
+
+completed_tasks = []
+
+analysis_results = []
+
+
+This is important because later nodes will update these lists.
+
+
+============================================================
+NODE 3 — INVESTIGATOR NODE
+============================================================
+
+Function:
+
+investigator_node()
+
+
+Purpose:
+
+Take an investigation task and decide which statistical
+analysis should be used.
+
+
+Currently the first task is selected:
+
+state["investigation_plan"][0]
+
+
+Then:
+
+Dataset Profile
+       +
+Current Task
+       ↓
+Investigator Agent
+       ↓
+Structured Analysis Decision
+
+
+Example:
+
+Task:
+
+"Determine whether Sex is associated with passenger survival."
+
+
+Investigator:
+
+tool = hypothesis_test
+
+column = Survived
+
+group_column = Sex
+
+test = chi_square
+
+
+The decision is stored in:
+
+investigation_decision
+
+
+The decision is converted into a dictionary using:
+
+decision.model_dump()
+
+
+This allows it to be stored inside AgentState.
+
+
+============================================================
+NODE 4 — EXECUTE NODE
+============================================================
+
+Function:
+
+execute_node()
+
+
+Purpose:
+
+Execute the statistical method selected by the Investigator.
+
+
+The node:
+
+1. Loads the dataset.
+2. Reconstructs the AnalysisDecision object.
+3. Sends the decision to execute_analysis().
+4. Receives the actual statistical result.
+5. Stores the result in AgentState.
+
+
+Process:
+
+Investigator Decision
+        ↓
+Tool Executor
+        ↓
+Statistical Function
+        ↓
+Actual Result
+
+
+Example:
+
+Investigator:
+
+Use chi-square.
+
+
+Executor:
+
+hypothesis_test(
+    df,
+    test="chi_square",
+    column="Survived",
+    group_column="Sex"
+)
+
+
+Python/SciPy calculates the actual result.
+
+
+Example result structure:
+
+{
+    "test": "chi_square",
+    "statistic": ...,
+    "p_value": ...,
+    "degrees_of_freedom": ...,
+    "sample_size": ...
+}
+
+
+============================================================
+UPDATING ANALYSIS RESULTS
+============================================================
+
+The result is added to:
+
+analysis_results
+
+
+Each result is stored together with the task that generated it.
+
+
+Structure:
+
+[
+    {
+        "task": "Determine whether Sex is associated with survival",
+        "analysis": {
+            "test": "chi_square",
+            "statistic": ...,
+            "p_value": ...,
+            ...
+        }
+    }
+]
+
+
+This becomes important later when the Critic and Final Report
+need to look at all the evidence.
+
+
+============================================================
+UPDATING COMPLETED TASKS
+============================================================
+
+After execution, the current task is added to:
+
+completed_tasks
+
+
+Example:
+
+Before:
+
+completed_tasks = []
+
+
+After:
+
+completed_tasks = [
+    "Determine whether Sex is associated with survival"
+]
+
+
+This will later allow the graph to determine which task should
+be investigated next.
+
+
+============================================================
+BUILDING THE LANGGRAPH
+============================================================
+
+We create:
+
+StateGraph(AgentState)
+
+
+This tells LangGraph:
+
+"The workflow will use AgentState as its shared state."
+
+
+Then we register nodes:
+
+profile
+planner
+investigator
+execute
+
+
+Each node points to a Python function.
+
+
+Conceptually:
+
+profile
+    → profile_node
+
+planner
+    → planner_node
+
+investigator
+    → investigator_node
+
+execute
+    → execute_node
+
+
+============================================================
+EDGES
+============================================================
+
+The current graph uses simple sequential edges.
+
+
+START → profile
+
+profile → planner
+
+planner → investigator
+
+investigator → execute
+
+execute → END
+
+
+Therefore the graph is:
+
+START
+  |
+  v
+profile
+  |
+  v
+planner
+  |
+  v
+investigator
+  |
+  v
+execute
+  |
+  v
+END
+
+
+============================================================
+COMPILING THE GRAPH
+============================================================
+
+After defining nodes and edges:
+
+workflow = builder.compile()
+
+
+Compilation converts the graph definition into an executable
+LangGraph workflow.
+
+
+We can then execute it using:
+
+workflow.invoke(initial_state)
+
+
+============================================================
+RUNNING THE WORKFLOW
+============================================================
+
+The initial state contains:
+
+{
+    "question":
+        "Determine whether Sex is associated with passenger survival.",
+
+    "dataset_path":
+        "data/titanic.csv"
+}
+
+
+Then:
+
+workflow.invoke(initial_state)
+
+
+LangGraph automatically executes:
+
+profile
+ ↓
+planner
+ ↓
+investigator
+ ↓
+execute
+
+
+The final state contains the information generated throughout
+the workflow.
+
+
+============================================================
+TESTING
+============================================================
+
+A test file was created:
+
+test_workflow.py
+
+
+The test:
+
+1. Creates an initial state.
+2. Invokes the workflow.
+3. Prints the investigation plan.
+4. Prints the current task.
+5. Prints the Investigator decision.
+6. Prints the actual statistical result.
+
+
+Command:
+
+uv run python test_workflow.py
+
+
+The workflow executed successfully.
+
+
+============================================================
+WHAT WE HAVE ACHIEVED
+============================================================
+
+Before this step:
+
+Profiler       ✓
+Planner        ✓
+Investigator   ✓
+Statistics     ✓
+Executor       ✓
+
+These components were independent.
+
+
+After this step:
+
+Profiler
+   ↓
+Planner
+   ↓
+Investigator
+   ↓
+Executor
+   ↓
+AgentState
+
+
+They are now connected through LangGraph.
+
+
+This is the first complete end-to-end execution path
+of StatAgent.
+
+
+============================================================
+IMPORTANT ARCHITECTURAL CONCEPT
+============================================================
+
+The workflow separates three different responsibilities.
+
+
+1. LLM REASONING
+
+Planner and Investigator decide:
+
+"What should we do?"
+
+and:
+
+"Which analysis should we use?"
+
+
+2. DETERMINISTIC COMPUTATION
+
+Python, Pandas and SciPy perform:
+
+"What is the actual result?"
+
+
+3. WORKFLOW CONTROL
+
+LangGraph controls:
+
+"What runs first?"
+"What runs next?"
+"What information is passed between stages?"
+
+
+Therefore:
+
+LLM
+    = Reasoning
+
+Python/SciPy
+    = Computation
+
+LangGraph
+    = Workflow
+
+
+============================================================
+CURRENT LIMITATION
+============================================================
+
+The current graph only investigates the FIRST task.
+
+
+Suppose Planner produces:
+
+1. Analyze Sex vs Survival
+2. Analyze Class vs Survival
+3. Analyze Age vs Survival
+4. Analyze Fare vs Survival
+
+
+Currently:
+
+Planner
+   ↓
+Take task #1
+   ↓
+Investigator
+   ↓
+Executor
+   ↓
+END
+
+
+Tasks #2, #3 and #4 are not executed yet.
+
+
+This is intentional.
+
+We first created a simple linear workflow to verify that
+all components communicate correctly.
+
+
+============================================================
+NEXT IMPROVEMENT
+============================================================
+
+The next stage is to make the workflow iterative.
+
+
+Desired workflow:
+
+Planner
+   ↓
+Get next task
+   ↓
+Investigator
+   ↓
+Executor
+   ↓
+Are tasks remaining?
+   |
+   ├── YES
+   |     ↓
+   |  Get next task
+   |     ↓
+   |  Investigator
+   |     ↓
+   |  Executor
+   |     ↓
+   |     ...
+   |
+   └── NO
+         ↓
+       Critic
+         ↓
+    Final Report
+
+
+This will introduce:
+
+- LangGraph conditional edges
+- Loops
+- Task tracking
+- Autonomous investigation
+
+
+============================================================
+INTERVIEW QUESTIONS
+============================================================
+
+Q1. Why did you use LangGraph instead of a normal Python
+function pipeline?
+
+Answer:
+
+The system contains multiple agentic stages and shared state.
+LangGraph allows me to represent these stages as nodes and
+control how information flows between them. It will also allow
+me to introduce conditional routing and iterative investigation.
+
+
+Q2. What is a node in LangGraph?
+
+Answer:
+
+A node is a Python function representing one step of the
+workflow. In StatAgent, examples include dataset profiling,
+planning, investigation and tool execution.
+
+
+Q3. What is an edge?
+
+Answer:
+
+An edge defines the transition between nodes and determines
+which node executes next.
+
+
+Q4. What is StateGraph?
+
+Answer:
+
+StateGraph allows us to define a graph whose nodes operate on
+a shared state object. In StatAgent, the shared state is
+AgentState.
+
+
+Q5. What is the purpose of AgentState?
+
+Answer:
+
+AgentState acts as shared memory between the workflow nodes.
+It stores the question, dataset profile, investigation plan,
+analysis results, completed tasks and other workflow information.
+
+
+Q6. Why compile the graph?
+
+Answer:
+
+After defining the nodes and edges, compile() converts the
+graph definition into an executable workflow that can be
+invoked with an initial state.
+
+
+Q7. Why didn't you build the loop immediately?
+
+Answer:
+
+I built and tested the workflow incrementally. First I verified
+that the individual components could communicate correctly.
+Once the linear workflow was working, the next step is to add
+conditional routing and iteration.
+
+
+Q8. How does information move between nodes?
+
+Answer:
+
+Each node receives the current AgentState, performs its operation,
+and returns updates to the state. LangGraph passes the updated
+state to the next node.
+
+
+Q9. What is the difference between LangChain and LangGraph
+in this project?
+
+Answer:
+
+LangChain is used for LLM interaction, prompts and structured
+LLM outputs. LangGraph is used to orchestrate the overall
+multi-step agent workflow and state transitions.
+
+
+============================================================
+GIT CHECKPOINT
+============================================================
+
+After completing this milestone:
+
+git status
+
+git add .
+
+git commit -m "Build initial LangGraph workflow"
+
+git push
+
+
+This creates a GitHub checkpoint for the first complete
+LangGraph pipeline.
+
+
+============================================================
+CURRENT PROJECT STATUS
+============================================================
+
+[✓] Project setup
+[✓] Environment setup
+[✓] Groq integration
+[✓] AgentState
+[✓] Dataset Profiler
+[✓] Planner Agent
+[✓] Statistical Tools
+[✓] Investigator Agent
+[✓] Tool Executor
+[✓] Initial LangGraph Workflow
+[✓] End-to-end workflow testing
+
+
+NEXT:
+
+[ ] Iterate through all investigation tasks
+[ ] Add conditional routing
+[ ] Add Critic/Validation
+[ ] Add Final Report generation
+[ ] Add Streamlit interface
+[ ] Add flexible Python execution if necessary
+[ ] Add deployment/documentation
+
+
+============================================================
+CORE TAKEAWAY
+============================================================
+
+The major achievement of this step is that StatAgent is no
+longer just a set of independent components.
+
+It now has an executable agentic workflow:
+
+User Question
+      ↓
+Dataset Profiling
+      ↓
+Planning
+      ↓
+Investigation
+      ↓
+Tool Selection
+      ↓
+Deterministic Statistical Analysis
+      ↓
+Stored Evidence
+
+
+The next major step is making the workflow capable of
+investigating MULTIPLE tasks autonomously instead of stopping
+after the first task.
+============================================================
+
+============================================================
+STATAGENT — STEP 7 & STEP 8
+MULTI-TASK INVESTIGATION LOOP + CRITIC AGENT
+============================================================
+
+
+============================================================
+STEP 7 — MULTI-TASK INVESTIGATION LOOP
+============================================================
+
+OBJECTIVE
+---------
+
+Previously, the LangGraph workflow investigated only the first
+task generated by the Planner.
+
+For example, if the Planner generated:
+
+1. Analyze Sex and Survival
+2. Analyze Passenger Class and Survival
+3. Compare Age between survival groups
+4. Analyze Fare and Survival
+
+the old workflow only executed:
+
+Task 1
+  ↓
+Investigator
+  ↓
+Executor
+  ↓
+END
+
+
+This was not enough for an autonomous investigation system.
+
+The goal of this step was to make the graph iterate through
+ALL investigation tasks.
+
+
+============================================================
+OLD WORKFLOW
+============================================================
+
+START
+  ↓
+Profile
+  ↓
+Planner
+  ↓
+Investigator
+  ↓
+Execute
+  ↓
+END
+
+
+Only one task was investigated.
+
+
+============================================================
+NEW WORKFLOW
+============================================================
+
+START
+  ↓
+Profile
+  ↓
+Planner
+  ↓
+Task
+  ↓
+Investigator
+  ↓
+Execute
+  ↓
+Are tasks remaining?
+  |
+  ├── YES → Task
+  |           ↓
+  |       Investigator
+  |           ↓
+  |        Execute
+  |           ↓
+  |          ...
+  |
+  └── NO → Critic
+              ↓
+             END
+
+
+This introduced the first real iterative/looping behavior
+into StatAgent.
+
+
+============================================================
+NEW STATE FIELD
+============================================================
+
+File:
+
+graph/state.py
+
+
+Added:
+
+current_task_index: int
+
+
+The Investigation section now contains:
+
+investigation_plan
+current_task
+current_task_index
+completed_tasks
+investigation_decision
+
+
+============================================================
+WHY CURRENT_TASK_INDEX?
+============================================================
+
+The Planner produces a list of tasks.
+
+Example:
+
+investigation_plan = [
+
+    "Analyze Sex and Survival",
+
+    "Analyze Passenger Class and Survival",
+
+    "Compare Age between survival groups",
+
+    "Analyze Fare and Survival"
+
+]
+
+
+We need to know which task the system is currently processing.
+
+Therefore:
+
+current_task_index
+
+
+is used as a pointer.
+
+
+Initially:
+
+current_task_index = 0
+
+
+This means:
+
+investigation_plan[0]
+
+
+is the current task.
+
+
+After execution:
+
+current_task_index += 1
+
+
+Then:
+
+investigation_plan[1]
+
+
+becomes the next task.
+
+
+============================================================
+NODE — TASK NODE
+============================================================
+
+Function:
+
+task_node()
+
+
+Purpose:
+
+Select the current investigation task from the investigation plan.
+
+
+Logic:
+
+current_index
+      ↓
+investigation_plan[current_index]
+      ↓
+current_task
+
+
+Example:
+
+current_task_index = 0
+
+↓
+
+current_task =
+"Analyze Sex and Survival"
+
+
+After the first execution:
+
+current_task_index = 1
+
+↓
+
+current_task =
+"Analyze Passenger Class and Survival"
+
+
+The Task Node therefore acts as the bridge between the
+investigation plan and the Investigator Agent.
+
+
+============================================================
+UPDATED PLANNER NODE
+============================================================
+
+The Planner Node now initializes:
+
+current_task_index = 0
+
+completed_tasks = []
+
+analysis_results = []
+
+
+This gives every new investigation a clean starting state.
+
+
+============================================================
+UPDATED EXECUTE NODE
+============================================================
+
+The Execute Node performs four important operations.
+
+
+1. Load the dataset.
+
+
+2. Reconstruct the Investigator's structured decision.
+
+
+3. Execute the selected statistical tool.
+
+
+4. Update the AgentState.
+
+
+The result is added to:
+
+analysis_results
+
+
+Example:
+
+[
+    {
+        "task": "Analyze Sex and Survival",
+
+        "analysis": {
+            "test": "chi_square",
+            "statistic": ...,
+            "p_value": ...
+        }
+    }
+]
+
+
+The completed task is added to:
+
+completed_tasks
+
+
+Example:
+
+[
+    "Analyze Sex and Survival"
+]
+
+
+Finally:
+
+current_task_index
+
+is incremented.
+
+
+Example:
+
+0 → 1
+1 → 2
+2 → 3
+
+
+This allows the graph to move through the entire plan.
+
+
+============================================================
+CONDITIONAL ROUTING
+============================================================
+
+The major LangGraph feature introduced in this step is:
+
+add_conditional_edges()
+
+
+Instead of always doing:
+
+execute → END
+
+
+the graph now asks:
+
+"Are there more investigation tasks?"
+
+
+The router function is:
+
+route_next_task()
+
+
+It checks:
+
+current_task_index
+
+against:
+
+total number of tasks
+
+
+Logic:
+
+if current_index < total_tasks:
+
+    return "task"
+
+else:
+
+    return "critic"
+
+
+============================================================
+ROUTER BEHAVIOR
+============================================================
+
+Example:
+
+Total tasks = 4
+
+
+After Task 1:
+
+current_task_index = 1
+
+1 < 4
+
+Therefore:
+
+execute → task
+
+
+After Task 2:
+
+current_task_index = 2
+
+2 < 4
+
+Therefore:
+
+execute → task
+
+
+After Task 3:
+
+current_task_index = 3
+
+3 < 4
+
+Therefore:
+
+execute → task
+
+
+After Task 4:
+
+current_task_index = 4
+
+4 < 4
+
+False.
+
+Therefore:
+
+execute → critic
+
+
+This creates the investigation loop.
+
+
+============================================================
+LANGGRAPH CONDITIONAL EDGE
+============================================================
+
+The graph uses:
+
+builder.add_conditional_edges(
+    "execute",
+    route_next_task,
+    {
+        "task": "task",
+        "critic": "critic",
+    },
+)
+
+
+Meaning:
+
+execute
+   ↓
+route_next_task()
+   |
+   ├── "task" → task node
+   |
+   └── "critic" → critic node
+
+
+This is an example of conditional routing in LangGraph.
+
+
+============================================================
+WHY CONDITIONAL EDGES ARE IMPORTANT
+============================================================
+
+Normal edge:
+
+A → B
+
+
+means:
+
+Always go from A to B.
+
+
+Conditional edge:
+
+A → router → B/C
+
+
+means:
+
+The next node depends on the current state.
+
+
+This is important for agentic systems because an agent may
+need to make decisions about what should happen next.
+
+
+In StatAgent:
+
+The state determines whether investigation should continue
+or move to validation.
+
+
+============================================================
+STEP 8 — CRITIC / VALIDATOR
+============================================================
+
+FILE:
+
+agents/critic.py
+
+
+The Critic Agent was introduced after the investigation loop.
+
+
+Purpose:
+
+Evaluate whether the collected evidence is sufficient to
+address the user's original question.
+
+
+The Critic receives:
+
+1. User question
+2. Investigation plan
+3. Completed tasks
+4. Statistical analysis results
+
+
+It does NOT perform new statistical calculations.
+
+
+============================================================
+WHY DO WE NEED A CRITIC?
+============================================================
+
+Completing an investigation plan does not automatically mean
+that the evidence is sufficient.
+
+
+For example:
+
+Question:
+
+"What factors are associated with passenger survival?"
+
+
+Suppose only this was completed:
+
+✓ Sex vs Survival
+
+
+There may not be enough evidence to address the broader question.
+
+
+The Critic therefore examines the completed investigation and
+provides a sufficiency assessment.
+
+
+============================================================
+CRITIC RESPONSIBILITY
+============================================================
+
+The Critic answers:
+
+"Do the collected analyses provide enough evidence to answer
+the user's question?"
+
+
+It does NOT answer:
+
+"What is the statistical result?"
+
+because Python/SciPy already calculates the statistical result.
+
+
+It also does NOT invent new evidence.
+
+
+Its responsibility is validation and coverage.
+
+
+============================================================
+CRITIC STRUCTURED OUTPUT
+============================================================
+
+The Critic uses a Pydantic model:
+
+CriticDecision
+
+
+It contains:
+
+evidence_sufficient
+feedback
+
+
+Example:
+
+{
+    "evidence_sufficient": True,
+
+    "feedback":
+    "The completed analyses address the main
+     investigation tasks."
+}
+
+
+This makes the Critic output machine-readable.
+
+
+============================================================
+CRITIC NODE
+============================================================
+
+Function:
+
+critic_node()
+
+
+The node calls:
+
+evaluate_evidence()
+
+
+with:
+
+question
+investigation_plan
+completed_tasks
+analysis_results
+
+
+The returned information is stored in AgentState.
+
+
+It updates:
+
+evidence_sufficient
+
+and:
+
+critic_feedback
+
+
+============================================================
+CRITIC PROMPT RULES
+============================================================
+
+The Critic is instructed to:
+
+- Evaluate whether evidence is sufficient.
+- Use the original question.
+- Consider the investigation plan.
+- Consider completed tasks.
+- Consider statistical results.
+- Not calculate new statistical results.
+- Not invent evidence.
+- Not perform additional analysis.
+- Identify whether important planned tasks remain incomplete.
+
+
+This keeps the Critic focused on validation.
+
+
+============================================================
+NEW GRAPH STRUCTURE
+============================================================
+
+The complete workflow is now:
+
+
+                         START
+                           |
+                           v
+                       PROFILE
+                           |
+                           v
+                        PLANNER
+                           |
+                           v
+                          TASK
+                           |
+                           v
+                    INVESTIGATOR
+                           |
+                           v
+                        EXECUTE
+                           |
+                           v
+                ┌────────────────────┐
+                │  Tasks remaining?  │
+                └────────────────────┘
+                    /            \
+                  YES             NO
+                   |               |
+                   v               v
+                 TASK            CRITIC
+                   |               |
+                   v               v
+            INVESTIGATOR          END
+                   |
+                   v
+                EXECUTE
+                   |
+                   └───────→ ...
+
+
+This is the current architecture.
+
+
+============================================================
+COMPLETE RESPONSIBILITIES
+============================================================
+
+PROFILE NODE
+------------
+
+Responsible for:
+
+Dataset → Dataset Profile
+
+
+PLANNER
+-------
+
+Responsible for:
+
+Question + Dataset Profile
+          ↓
+Investigation Plan
+
+
+TASK NODE
+---------
+
+Responsible for:
+
+Investigation Plan
+        ↓
+Current Task
+
+
+INVESTIGATOR
+------------
+
+Responsible for:
+
+Current Task + Dataset Profile
+        ↓
+Statistical Tool Selection
+
+
+EXECUTOR
+--------
+
+Responsible for:
+
+Tool Selection
+        ↓
+Actual Python/SciPy Calculation
+
+
+TASK LOOP
+---------
+
+Responsible for:
+
+Moving through all investigation tasks.
+
+
+CRITIC
+------
+
+Responsible for:
+
+Evaluating whether collected evidence is sufficient.
+
+
+============================================================
+IMPORTANT ARCHITECTURAL PRINCIPLE
+============================================================
+
+The project continues to follow:
+
+LLM = Reasoning
+Python = Computation
+LangGraph = Workflow
+AgentState = Shared Memory
+
+
+More specifically:
+
+Planner
+    ↓
+LLM reasoning
+
+Investigator
+    ↓
+LLM reasoning
+
+Statistical Executor
+    ↓
+Python/SciPy computation
+
+LangGraph
+    ↓
+Workflow control
+
+Critic
+    ↓
+Evidence validation
+
+
+============================================================
+WHY THE CRITIC DOES NOT CALCULATE STATISTICS
+============================================================
+
+We deliberately separate:
+
+Calculation
+
+from:
+
+Interpretation/Validation.
+
+
+Python/SciPy produces:
+
+statistic
+p-value
+sample size
+etc.
+
+
+The Critic receives those actual results and evaluates
+whether the evidence covers the question.
+
+
+This prevents the Critic from becoming another source of
+potentially incorrect numerical calculations.
+
+
+============================================================
+WHAT HAPPENS DURING A COMPLETE INVESTIGATION?
+============================================================
+
+Example question:
+
+"What factors are associated with passenger survival?"
+
+
+Step 1:
+
+Profiler examines the dataset.
+
+
+Step 2:
+
+Planner creates multiple investigation tasks.
+
+
+Step 3:
+
+Task Node selects Task 1.
+
+
+Step 4:
+
+Investigator chooses the appropriate statistical method.
+
+
+Step 5:
+
+Executor performs the actual calculation.
+
+
+Step 6:
+
+The result is stored in:
+
+analysis_results
+
+
+Step 7:
+
+current_task_index increases.
+
+
+Step 8:
+
+Router checks whether more tasks remain.
+
+
+Step 9:
+
+If yes:
+
+Go back to Task Node.
+
+
+Step 10:
+
+Repeat until all planned tasks are completed.
+
+
+Step 11:
+
+Router sends the workflow to the Critic.
+
+
+Step 12:
+
+Critic evaluates the collected evidence.
+
+
+Step 13:
+
+Critic stores:
+
+evidence_sufficient
+
+critic_feedback
+
+
+Step 14:
+
+Workflow currently ends.
+
+
+============================================================
+WHAT HAS BEEN COMPLETED
+============================================================
+
+[✓] Project setup
+[✓] uv environment
+[✓] Groq integration
+[✓] AgentState
+[✓] Dataset Profiler
+[✓] Planner Agent
+[✓] Statistical Tools
+[✓] Investigator Agent
+[✓] Structured Investigator Output
+[✓] Tool Executor
+[✓] Initial LangGraph Workflow
+[✓] Multi-task Investigation Loop
+[✓] Conditional Routing
+[✓] Critic Agent
+[✓] Critic Structured Output
+[✓] Critic Node
+[✓] End-to-end workflow
+
+
+============================================================
+CURRENT LIMITATION
+============================================================
+
+The Critic currently evaluates the investigation and then
+the graph ends.
+
+
+Current:
+
+Investigation
+     ↓
+Critic
+     ↓
+END
+
+
+Therefore, the system does not yet generate a final natural
+language analytical report.
+
+
+============================================================
+NEXT COMPONENT
+============================================================
+
+The next component is:
+
+FINAL REPORT AGENT
+
+
+The desired flow will become:
+
+Investigation
+     ↓
+Actual Evidence
+     ↓
+Critic
+     ↓
+Final Report Agent
+     ↓
+Final Analytical Report
+
+
+The Final Report Agent will receive:
+
+- User question
+- Investigation plan
+- Completed tasks
+- Statistical results
+- Critic feedback
+
+
+It will then convert the evidence into a clear analytical report.
+
+
+IMPORTANT:
+
+The Final Report Agent should interpret the results already
+calculated by Python.
+
+It should NOT invent statistical values.
+
+
+============================================================
+INTERVIEW QUESTIONS
+============================================================
+
+Q1. Why did you introduce a loop?
+
+Answer:
+
+The Planner can generate multiple investigation tasks.
+Initially the workflow only executed the first task. I added
+a task index and LangGraph conditional routing so the system
+can automatically process each task until the investigation
+plan is completed.
+
+
+Q2. How does the system know when to stop?
+
+Answer:
+
+The current task index is compared with the total number of
+tasks in the investigation plan. If more tasks remain, the
+graph routes back to the Task node. Otherwise it routes to
+the Critic.
+
+
+Q3. What is conditional routing in LangGraph?
+
+Answer:
+
+Conditional routing allows the next node to depend on the
+current state. In StatAgent, the router determines whether
+to investigate another task or move to the Critic.
+
+
+Q4. Why do you need a Critic Agent?
+
+Answer:
+
+The Critic evaluates whether the collected evidence is
+sufficient to address the original question. It acts as a
+validation stage before generating the final report.
+
+
+Q5. Does the Critic perform statistical calculations?
+
+Answer:
+
+No. Statistical calculations are performed by deterministic
+Python and SciPy tools. The Critic only evaluates the
+collected evidence.
+
+
+Q6. What does the Critic receive?
+
+Answer:
+
+It receives the original question, investigation plan,
+completed tasks and statistical analysis results.
+
+
+Q7. Why use structured output for the Critic?
+
+Answer:
+
+The workflow needs predictable fields such as
+evidence_sufficient and feedback. Structured output makes
+the LLM response machine-readable and easier to use inside
+the LangGraph workflow.
+
+
+============================================================
+GITHUB CHECKPOINT
+============================================================
+
+This is a meaningful milestone.
+
+Use:
+
+git status
+
+git add .
+
+git commit -m "Add investigation loop and critic agent"
+
+git push
+
+
+============================================================
+CORE TAKEAWAY
+============================================================
+
+StatAgent has now evolved from:
+
+Question
+  ↓
+One Analysis
+  ↓
+End
+
+
+into:
+
+Question
+  ↓
+Planning
+  ↓
+Multiple Investigations
+  ↓
+Statistical Evidence
+  ↓
+Evidence Validation
+
+
+The system can now autonomously work through a multi-step
+investigation plan and validate the collected evidence.
+
+The remaining major component is the:
+
+FINAL REPORT AGENT
+
+which will turn the collected evidence into the final
+evidence-backed analytical response.
+============================================================
+
+============================================================
+STATAGENT — STEP 9
+FINAL REPORT AGENT
+============================================================
+
+OBJECTIVE
+---------
+
+The previous stages of StatAgent were able to:
+
+1. Understand the user's question.
+2. Profile the dataset.
+3. Create an investigation plan.
+4. Investigate multiple tasks.
+5. Select appropriate statistical methods.
+6. Execute the statistical analysis using Python/SciPy.
+7. Collect the actual statistical evidence.
+8. Validate the evidence using the Critic Agent.
+
+However, the system still needed a component that could convert
+the collected evidence into a clear, human-readable analytical
+response.
+
+The purpose of the Final Report Agent is to generate this final
+analytical report.
+
+
+============================================================
+FILE
+============================================================
+
+agents/reporter.py
+
+
+============================================================
+ROLE OF THE FINAL REPORT AGENT
+============================================================
+
+The Final Report Agent is responsible for:
+
+    Statistical Evidence
+            ↓
+       Interpretation
+            ↓
+     Human-readable Report
+
+
+It does NOT perform the statistical calculations.
+
+The calculations have already been performed by:
+
+Python
+Pandas
+SciPy
+
+
+The Report Agent only interprets and communicates those results.
+
+
+============================================================
+WHY DO WE NEED A SEPARATE REPORT AGENT?
+============================================================
+
+The Critic and Report Agent have different responsibilities.
+
+
+CRITIC
+------
+
+The Critic asks:
+
+"Is the collected evidence sufficient to answer the question?"
+
+
+REPORT AGENT
+------------
+
+The Report Agent asks:
+
+"How should we communicate the collected evidence to the user?"
+
+
+Therefore:
+
+Critic
+    ↓
+Validation
+
+Report Agent
+    ↓
+Communication
+
+
+This keeps the responsibilities of the components separate.
+
+
+============================================================
+INPUTS TO THE REPORT AGENT
+============================================================
+
+The Report Agent receives:
+
+1. User question
+2. Investigation plan
+3. Completed tasks
+4. Statistical analysis results
+5. Critic feedback
+
+
+Conceptually:
+
+
+User Question
+      +
+Investigation Plan
+      +
+Completed Tasks
+      +
+Actual Statistical Evidence
+      +
+Critic Feedback
+      ↓
+Final Report Agent
+
+
+============================================================
+REPORT STRUCTURE
+============================================================
+
+The Report Agent is instructed to generate:
+
+1. Question
+2. Key Findings
+3. Statistical Evidence
+4. Interpretation
+5. Limitations
+6. Conclusion
+
+
+This gives the final response a consistent structure.
+
+
+============================================================
+IMPORTANT SAFETY / ACCURACY RULE
+============================================================
+
+The Report Agent must NOT invent statistical results.
+
+
+For example, suppose Python produces:
+
+p_value = 0.002
+
+
+The Report Agent can explain what this result means.
+
+
+It must NOT change it to:
+
+p_value = 0.01
+
+
+or create a statistic that was never calculated.
+
+
+Therefore:
+
+
+Python/SciPy
+    ↓
+Actual Statistical Result
+    ↓
+Report Agent
+    ↓
+Interpretation
+
+
+============================================================
+NO NEW STATISTICAL ANALYSIS
+============================================================
+
+The Report Agent is explicitly instructed:
+
+- Do not calculate new statistical results.
+- Do not perform new analysis.
+- Do not invent evidence.
+- Use only the evidence provided.
+- Do not claim causation from correlation or association.
+- Mention limitations when relevant.
+
+
+This maintains the project's core architecture.
+
+
+============================================================
+CORE PROJECT PRINCIPLE
+============================================================
+
+The project follows:
+
+
+LLM
+    =
+Reasoning + Interpretation
+
+
+Python/SciPy
+    =
+Actual Statistical Computation
+
+
+LangGraph
+    =
+Workflow Orchestration
+
+
+AgentState
+    =
+Shared Workflow Memory
+
+
+The Final Report Agent is therefore an interpretation layer,
+not a calculation engine.
+
+
+============================================================
+REPORT NODE
+============================================================
+
+The Report Agent is connected to LangGraph through:
+
+report_node()
+
+
+The node receives information from AgentState:
+
+state["question"]
+
+state["investigation_plan"]
+
+state["completed_tasks"]
+
+state["analysis_results"]
+
+state["critic_feedback"]
+
+
+These are passed to:
+
+generate_final_report()
+
+
+The generated report is then stored in:
+
+state["final_report"]
+
+
+============================================================
+LANGGRAPH CONNECTION
+============================================================
+
+Previously:
+
+Critic
+   ↓
+END
+
+
+After Step 9:
+
+Critic
+   ↓
+Report Agent
+   ↓
+END
+
+
+The graph therefore becomes:
+
+
+START
+  ↓
+PROFILE
+  ↓
+PLANNER
+  ↓
+TASK LOOP
+  ↓
+INVESTIGATOR
+  ↓
+EXECUTE
+  ↓
+CRITIC
+  ↓
+REPORT
+  ↓
+END
+
+
+============================================================
+FINAL REPORT FLOW
+============================================================
+
+The complete reporting process is:
+
+
+Actual Statistical Evidence
+            ↓
+         Critic
+            ↓
+    Evidence Validation
+            ↓
+      Report Agent
+            ↓
+      Final Report
+            ↓
+          User
+
+
+============================================================
+EXAMPLE
+============================================================
+
+Suppose the user asks:
+
+"What factors are associated with passenger survival?"
+
+
+The investigation produces several statistical results.
+
+
+For example:
+
+Sex vs Survival
+    ↓
+Chi-square test
+    ↓
+Actual statistic + p-value
+
+
+Passenger Class vs Survival
+    ↓
+Chi-square test
+    ↓
+Actual statistic + p-value
+
+
+Age vs Survival
+    ↓
+Group comparison
+    ↓
+Actual result
+
+
+These results are passed to the Report Agent.
+
+
+The Report Agent then converts the evidence into a readable
+response containing:
+
+
+Question
+
+Key Findings
+
+Statistical Evidence
+
+Interpretation
+
+Limitations
+
+Conclusion
+
+
+The numerical results originate from Python/SciPy, while the
+LLM provides the natural-language explanation.
+
+
+============================================================
+WHY NOT LET THE CRITIC GENERATE THE REPORT?
+============================================================
+
+It is technically possible to combine both responsibilities.
+
+
+However, we keep them separate because:
+
+
+Critic
+    →
+Checks evidence sufficiency
+
+
+Report Agent
+    →
+Communicates the evidence
+
+
+This follows a simple separation-of-responsibilities design.
+
+
+It also makes the architecture easier to explain and debug.
+
+
+============================================================
+FINAL ARCHITECTURE AFTER STEP 9
+============================================================
+
+
+                    USER
+                      |
+                      v
+             Dataset + Question
+                      |
+                      v
+              Dataset Profiler
+                      |
+                      v
+                Planner Agent
+                      |
+                      v
+             Investigation Plan
+                      |
+                      v
+                 Task Node
+                      |
+                      v
+             Investigator Agent
+                      |
+                      v
+              Tool Selection
+                      |
+                      v
+               Tool Executor
+                      |
+                      v
+                Python/SciPy
+                      |
+                      v
+              Actual Evidence
+                      |
+                      v
+                   Critic
+                      |
+                      v
+              Evidence Validation
+                      |
+                      v
+              Final Report Agent
+                      |
+                      v
+                Final Report
+                      |
+                      v
+                    USER
+
+
+============================================================
+WHAT STEP 9 COMPLETES
+============================================================
+
+Before Step 9:
+
+
+Investigation
+      ↓
+Evidence
+      ↓
+Critic
+      ↓
+END
+
+
+After Step 9:
+
+
+Investigation
+      ↓
+Evidence
+      ↓
+Critic
+      ↓
+Report Agent
+      ↓
+Final Analytical Report
+
+
+The backend now has a complete path from:
+
+User Question
+
+to:
+
+Final Evidence-backed Response.
+
+
+============================================================
+INTERVIEW QUESTIONS
+============================================================
+
+Q1. What is the purpose of the Final Report Agent?
+
+Answer:
+
+The Final Report Agent converts the statistical evidence
+collected during the investigation into a structured,
+human-readable analytical report.
+
+
+Q2. Does the Report Agent perform statistical calculations?
+
+Answer:
+
+No. Statistical calculations are performed deterministically
+using Python and SciPy. The Report Agent only interprets and
+communicates the results.
+
+
+Q3. What information does the Report Agent receive?
+
+Answer:
+
+It receives the user's question, investigation plan, completed
+tasks, statistical analysis results and Critic feedback.
+
+
+Q4. Why separate the Critic and Report Agent?
+
+Answer:
+
+The Critic validates whether the evidence is sufficient, while
+the Report Agent communicates the validated evidence to the
+user. This keeps the responsibilities separate.
+
+
+Q5. How do you prevent the LLM from hallucinating statistical
+results?
+
+Answer:
+
+The statistical values are generated by deterministic Python
+and SciPy tools. The Report Agent is instructed to use only
+those results and not perform new calculations or invent
+evidence.
+
+
+Q6. What happens after the Report Agent?
+
+Answer:
+
+The generated report is stored in AgentState as final_report
+and the LangGraph workflow reaches END.
+
+
+============================================================
+STEP 9 STATUS
+============================================================
+
+[✓] Created Final Report Agent
+
+[✓] Created report prompt
+
+[✓] Passed investigation evidence to Report Agent
+
+[✓] Added report_node()
+
+[✓] Connected Critic → Report
+
+[✓] Connected Report → END
+
+[✓] Stored final output in AgentState
+
+[✓] Completed the backend investigation pipeline
+
+
+============================================================
+CORE TAKEAWAY
+============================================================
+
+The Final Report Agent is the final interpretation layer of
+StatAgent.
+
+The project now follows:
+
+
+QUESTION
+   ↓
+PLAN
+   ↓
+INVESTIGATE
+   ↓
+CALCULATE
+   ↓
+VALIDATE
+   ↓
+EXPLAIN
+
+
+The important separation is:
+
+
+LLM
+    → reasoning and interpretation
+
+
+Python/SciPy
+    → actual statistical computation
+
+
+LangGraph
+    → workflow orchestration
+
+
+AgentState
+    → shared memory
+
+
+Final Report Agent
+    → human-readable analytical output
+
+
+============================================================
+NEXT STEP
+============================================================
+
+The core backend is now complete.
+
+The remaining major component is:
+
+STREAMLIT UI
+
+
+The Streamlit application will provide:
+
+- Dataset upload
+- Question input
+- Run Investigation button
+- Investigation plan display
+- Analysis results
+- Critic feedback
+- Final report
+
+Streamlit will act as the interface layer over the existing
+LangGraph workflow.
+============================================================
